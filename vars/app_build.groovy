@@ -1,156 +1,77 @@
 def call() {
-stage('build') {
-    echo "Building the project"
+    def podYaml = '''
+apiVersion: v1
+kind: Pod
+metadata:
+  name: android-build-pod
+  labels:
+    role: build-agent
+spec:
+  restartPolicy: Never
+  containers:
+    - name: android-builder
+      image: mobiledevops/android-sdk-image:34.0.0
+      command:
+        - cat
+      tty: true
+      securityContext:
+        runAsUser: 0
+      resources:
+        requests:
+          cpu: "1"
+          memory: "1Gi"
+        limits:
+          cpu: "4"
+          memory: "3Gi"
+'''
 
-    sh '''
-        set -e
+    podTemplate(
+        label: 'android-builder-agent',
+        yaml: podYaml
+    ) {
+        node('android-builder-agent') {
+            try {
+                container('android-builder') {
+                    stage('Checkout Code') {
+                        checkout scm
+                    }
 
-        echo "===== Jenkins Environment ====="
-        whoami
-        hostname
-        pwd
+                    stage('Build APK') {
+                        echo "Building APK inside Kubernetes Pod"
 
-        echo "===== Configure Java ====="
-        export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-        export PATH=$JAVA_HOME/bin:$PATH
+                        sh '''
+                            set -e
 
-        echo "JAVA_HOME=$JAVA_HOME"
-        java --version
+                            # Find gradlew dynamically in workspace
+                            GRADLEW_PATH=$(find . -maxdepth 3 -name gradlew | head -n 1)
 
-        echo "===== Configure Gradle ====="
-        export GRADLE_HOME=/opt/gradle/current
-        export PATH=$GRADLE_HOME/bin:$PATH
+                            if [ -n "$GRADLEW_PATH" ]; then
+                                echo "Using project wrapper at: $GRADLEW_PATH"
+                                cd "$(dirname "$GRADLEW_PATH")"
+                                chmod +x gradlew
+                                ./gradlew assembleRelease \
+                                    --no-daemon \
+                                    -Dorg.gradle.workers.max=2 \
+                                    -Dorg.gradle.jvmargs="-Xmx1800m -XX:MaxMetaspaceSize=384m"
+                            else
+                                echo "gradlew script not found in repo; using pre-installed system Gradle"
+                                gradle assembleRelease \
+                                    --no-daemon \
+                                    -Dorg.gradle.workers.max=2 \
+                                    -Dorg.gradle.jvmargs="-Xmx1800m -XX:MaxMetaspaceSize=384m"
+                            fi
+                        '''
+                    }
 
-        echo "GRADLE_HOME=$GRADLE_HOME"
-        which gradle
-        gradle --version
-
-        echo "===== Configure Android SDK ====="
-        export ANDROID_HOME=/opt/android-sdk
-        export ANDROID_SDK_ROOT=/opt/android-sdk
-
-        export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
-        export PATH=$ANDROID_HOME/platform-tools:$PATH
-        export PATH=$ANDROID_HOME/emulator:$PATH
-
-        echo "ANDROID_HOME=$ANDROID_HOME"
-        echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-        echo "PATH=$PATH"
-
-        echo "===== Verify Android SDK Directory ====="
-
-        if [ ! -d "$ANDROID_HOME" ]; then
-            echo "ERROR: Android SDK directory does not exist:"
-            echo "$ANDROID_HOME"
-            exit 1
-        fi
-
-        ls -ld "$ANDROID_HOME"
-
-        echo "===== Verify Android SDK Command Line Tools ====="
-
-        if [ ! -d "$ANDROID_HOME/cmdline-tools/latest/bin" ]; then
-            echo "ERROR: Android SDK command-line tools not found:"
-            echo "$ANDROID_HOME/cmdline-tools/latest/bin"
-            exit 1
-        fi
-
-        echo "===== SDK Manager ====="
-
-        which sdkmanager
-        sdkmanager --version
-
-        echo "===== ADB ====="
-
-        which adb
-        adb version
-
-        echo "===== Android SDK Components ====="
-
-        echo "Checking installed SDK components..."
-
-        sdkmanager --list | grep -E 'build-tools;33.0.1|platforms;android-34' || true
-
-        echo "===== Accept Android SDK Licenses ====="
-
-        yes | sdkmanager --licenses >/dev/null || true
-
-        echo "===== Install Required Android SDK Components ====="
-
-        sdkmanager "platforms;android-34" "build-tools;33.0.1"
-
-        echo "===== Verify Android Platform ====="
-
-        if [ ! -d "$ANDROID_HOME/platforms/android-34" ]; then
-            echo "ERROR: Android platform 34 is missing."
-            exit 1
-        fi
-
-        echo "Android platform 34 found."
-
-        echo "===== Verify Android Build Tools ====="
-
-        if [ ! -d "$ANDROID_HOME/build-tools/33.0.1" ]; then
-            echo "ERROR: Android Build Tools 33.0.1 is missing."
-            exit 1
-        fi
-
-        echo "Android Build Tools 33.0.1 found."
-
-        echo "===== Project Directory ====="
-
-        cd CalculatorApp
-
-        echo "Project directory:"
-        pwd
-
-        echo "===== Project Files ====="
-
-        ls -la
-
-        echo "===== Gradle Wrapper Verification ====="
-
-        chmod +x gradlew
-
-        ls -lh gradle/wrapper/
-
-        test -f gradle/wrapper/gradle-wrapper.jar
-        test -f gradle/wrapper/gradle-wrapper.properties
-
-        echo "Gradle wrapper files verified successfully."
-
-        echo "===== Create local.properties ====="
-
-        echo "sdk.dir=$ANDROID_HOME" > local.properties
-
-        cat local.properties
-
-        echo "===== Verify Android SDK From Project ====="
-
-        test -d "$ANDROID_HOME/platforms/android-34"
-        test -d "$ANDROID_HOME/build-tools/33.0.1"
-
-        echo "Android SDK verification successful."
-
-        echo "===== Gradle Version ====="
-
-        which gradle
-        gradle --version
-
-        echo "===== Cleaning Project ====="
-
-        gradle clean --no-daemon
-
-        echo "===== Building APK ====="
-
-        gradle assembleRelease --no-daemon
-
-        echo "===== APK Generated ====="
-
-        ls -lh app/build/outputs/apk/release/
-
-        echo "===== Build Completed Successfully ====="
-    '''
-}
-
+                    stage('Archive Artifacts') {
+                        archiveArtifacts artifacts: '**/*.apk', 
+                                         fingerprint: true, 
+                                         onlyIfSuccessful: true
+                    }
+                }
+            } finally {
+                deleteDir()
+            }
+        }
+    }
 }

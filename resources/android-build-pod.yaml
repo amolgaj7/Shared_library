@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: android-build-pod
+  labels:
+    role: build-agent
+spec:
+  restartPolicy: Never
+  containers:
+    - name: android-builder
+      image: your-custom-registry/ubuntu-android-builder:latest # Insert your Ubuntu container image tag
+      command:
+        - cat
+      tty: true
+      resources:
+        requests:
+          cpu: "4"
+          memory: "2Gi"
+        limits:
+          cpu: "6"
+          memory: "3Gi"
